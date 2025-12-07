@@ -1,0 +1,12 @@
+numpy
+pandas
+opencv-python
+mediapipe
+torch
+torchvision
+chromadb
+scikit-learn
+streamlit
+openai
+requests
+Pillow

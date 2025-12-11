@@ -46,13 +46,18 @@ def fetch_all_segments():
 
     results = collection.get(include=["embeddings", "metadatas"])
     segments = []
-    for emb, meta in zip(results["embeddings"], results["metadatas"]):
+    for i, (emb, meta) in enumerate(zip(results["embeddings"], results["metadatas"])):
         segments.append({
-            "start_frame": meta["start_frame"],
-            "end_frame": meta["end_frame"],
-            "blink_count": meta["blink_count"],
-            "vector": emb
+            "start_frame": meta.get("start_frame", 0),
+            "end_frame": meta.get("end_frame", 0),
+            "blink_count": meta.get("blink_count", 0),
+            "offscreen_ratio": meta.get("offscreen_ratio", 0.0),  # NEW
+            "max_no_blink_run": meta.get("max_no_blink_run", 0.0),  # NEW
+            "vector": emb,
+            "metadata": meta  # Keep original metadata for format_segments_for_llm
         })
+
+
     logging.info(f"✅ Retrieved {len(segments)} segments from ChromaDB")
     return segments
 
@@ -61,46 +66,64 @@ def format_segments_for_llm(segments):
     text = ""
     for s in segments:
         v = s["vector"]
+        meta = s["metadata"]
         text += f"""
-Segment {s['start_frame']} - {s['end_frame']}
-Mean Eye Openness: {v[0]}
-Std Eye Openness: {v[1]}
-Blink Count: {s['blink_count']}
-Gaze X Mean: {v[3]}
-Gaze X Std: {v[4]}
-Gaze Y Mean: {v[5]}
-NaN Ratio: {v[6]}
+Segment {meta['start_frame']}-{meta['end_frame']}
+Eye: {v[0]:.2f}±{v[1]:.2f}, Blinks: {meta['blink_count']}
+GazeX: {v[3]:.2f}±{v[4]:.2f}, Volatility: {v[6]:.2f}
+Offscreen: {meta.get('offscreen_ratio', v[7]):.2f}, NoBlinkMax: {meta.get('max_no_blink_run', v[8]):.2f}
 """
     return text
-
 def build_prompt(segments):
+    total_segments = len(segments)
+    
+    # ALL FEATURES - global stats
+    blink_stats = [s.get("blink_count", 0) for s in segments]
+    offscreen_stats = [s.get("offscreen_ratio", 0.0) for s in segments]
+    gaze_x_stats = []
+    gaze_x_std_stats = []
+    volatility_stats = []
+    eye_open_stats = []
+    
+    for s in segments:
+        v = s["vector"]
+        gaze_x_stats.append(v[3])           # gaze_x_mean
+        gaze_x_std_stats.append(v[4])       # gaze_x_std
+        volatility_stats.append(v[6])       # volatility
+        eye_open_stats.append(v[0])         # mean_eye_openness
+    
     return f"""
-You are an advanced AI proctoring and behavioral analysis system.
+You are an expert behavioral analyst reviewing eye-tracking data from an online interview.
 
-These are eye-tracking + gaze embeddings captured from a candidate's online interview session.
-Each segment is a short window of the interview.
+GLOBAL SUMMARY (across {total_segments} segments):
+BLINKS: {sorted(blink_stats)[-3:]} (high) ... {sorted(blink_stats)[:3]} (low) | mean={sum(blink_stats)/total_segments:.2f}
+OFFSCREEN: {max(offscreen_stats):.2f} (max) ... {min(offscreen_stats):.2f} (min) | mean={sum(offscreen_stats)/total_segments:.2f}
+GAZE_X: {max(gaze_x_stats):.2f} (max) ... {min(gaze_x_stats):.2f} (min) | mean={sum(gaze_x_stats)/total_segments:.2f}
+GAZE_X_STD: {max(gaze_x_std_stats):.2f} (max) ... {min(gaze_x_std_stats):.2f} (min)
+VOLATILITY: {max(volatility_stats):.2f} (max) ... {min(volatility_stats):.2f} (min)
+EYE_OPEN: {sum(eye_open_stats)/total_segments:.2f} (mean)
 
-Your task:
-1. Analyze eye movement patterns
-2. Detect unusual or suspicious behavior
-3. Decide likelihood of external help / cheating / impersonation
-4. Give FINAL Fraud Score (0 - 100)
-5. List most suspicious frame segments
-6. Provide clear reasoning
-
-Segments data:
+DETAILED SEGMENTS:
 {format_segments_for_llm(segments)}
 
-Respond ONLY in valid JSON format:
+TASK: Fraud risk score (0-100) based on ALL behavioral signals above.
 
+JSON:
 {{
-  "fraud_score": <integer 0-100>,
-  "most_suspicious_segments": ["start-end", "..."],
-  "reason": "detailed explanation"
+  "fraud_score": <0-100>,
+  "most_suspicious_segments": ["start-end"],
+  "reason": "Behavioral analysis using ALL global + segment data"
 }}
 """
 
-# ================= CALL AZURE OPENAI =================
+# ================= JSON CLEANER =================
+def clean_llm_json(text):
+    text = text.strip()
+    text = re.sub(r"^```json", "", text)
+    text = re.sub(r"^```", "", text)
+    text = re.sub(r"```$", "", text)
+    return text.strip()
+
 def call_azure_openai(prompt):
     logging.info("🧠 Sending request to Azure OpenAI...")
     client = AzureOpenAI(
@@ -112,10 +135,10 @@ def call_azure_openai(prompt):
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": "You are an expert fraud detection and proctoring AI."},
+                {"role": "system", "content": "You are an expert fraud detection and proctoring AI. Respond ONLY in valid JSON format."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2,
+            temperature=0.1,
             max_tokens=600
         )
         logging.info("✅ Received response from Azure OpenAI")
@@ -123,14 +146,6 @@ def call_azure_openai(prompt):
     except Exception as e:
         logging.error(f"❌ Error calling Azure OpenAI: {e}")
         raise
-
-# ================= JSON CLEANER =================
-def clean_llm_json(text):
-    text = text.strip()
-    text = re.sub(r"^```json", "", text)
-    text = re.sub(r"^```", "", text)
-    text = re.sub(r"```$", "", text)
-    return text.strip()
 
 # ================= DELETE DB =================
 def delete_chroma_db():

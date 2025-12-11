@@ -51,7 +51,9 @@ def main(features_csv):
                 float(np.nan_to_num(r["gaze_x_mean"], nan=0.0)),
                 float(np.nan_to_num(r["gaze_x_std"], nan=0.0)),
                 float(np.nan_to_num(r["gaze_y_mean"], nan=0.0)),
-                float(np.nan_to_num(r["nan_ratio"], nan=0.0))
+                float(np.nan_to_num(r["gaze_volatility"], nan=0.0)),  # NEW
+                float(np.nan_to_num(r["offscreen_ratio"], nan=0.0)),  # NEW
+                float(np.nan_to_num(r["max_no_blink_run"], nan=0.0))  # NEW
             ]
 
             id_ = f"{int(r['start_frame'])}_{int(r['end_frame'])}"
@@ -59,9 +61,16 @@ def main(features_csv):
             metadata = {
                 "start_frame": int(r["start_frame"]),
                 "end_frame": int(r["end_frame"]),
-                "blink_count": int(r["blink_count"])
+                "mean_eye_openness": float(r["mean_eye_openness"]),
+                "std_eye_openness": float(r["std_eye_openness"]),
+                "blink_count": int(r["blink_count"]),
+                "gaze_x_mean": float(r["gaze_x_mean"]),
+                "gaze_x_std": float(r["gaze_x_std"]),
+                "gaze_y_mean": float(r["gaze_y_mean"]),
+                "gaze_volatility": float(r["gaze_volatility"]),
+                "offscreen_ratio": float(r["offscreen_ratio"]),
+                "max_no_blink_run": float(r["max_no_blink_run"])
             }
-
             ids.append(id_)
             embeddings.append(vector)
             metadatas.append(metadata)
